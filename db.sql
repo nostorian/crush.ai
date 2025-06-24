@@ -1,6 +1,4 @@
-CREATE DATABASE IF NOT EXISTS crushai_db;
-
-USE crushai_db;
+CREATE DATABASE crushai_db;
 
 CREATE TABLE IF NOT EXISTS users (
     username VARCHAR(50) PRIMARY KEY,

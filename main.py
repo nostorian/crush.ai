@@ -3,9 +3,11 @@ from flask_socketio import SocketIO, emit
 from flask_toastr import Toastr
 from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, login_user, logout_user, login_required, UserMixin, current_user
-import requests, os
-from characterai import PyCAI
+import pytz, os
+from PyCharacterAI import get_client
+import PyCharacterAI as cai
 import psycopg2
+import asyncio
 import dotenv
 
 app = Flask(__name__)
@@ -43,21 +45,67 @@ def get_user(username):
     conn.close()
     return user
 
+async def create_chat():
+    client = await get_client(token=token)
+    chat, _ = await client.chat.create_chat(charid)
+    await client.close_session()
+    return chat.chat_id
+
+async def new_chat_id():
+    client = await get_client(token=token)
+    chat, _ = await client.chat.create_chat(charid)
+    await client.close_session()
+    return chat.chat_id
+
+async def chat_response_async(char_id, chat_id, message):
+    client = await get_client(token=token)
+    try:
+        response = await client.chat.send_message(char_id, chat_id, message)
+        return response.get_primary_candidate().text
+    finally:
+        await client.close_session()
+
 def chat_response(char_id, chat_id, message):
-    response = requests.get("https://c-ai-api.onrender.com/chat", params={"char_id": char_id, "chat_id": chat_id, "message": message})
-    return response.json()["detail"]
+    return asyncio.run(chat_response_async(char_id, chat_id, message))
+
+async def get_char_name(client: cai.Client, char_id):
+    info = await client.character.fetch_character_info(char_id)
+    return info.name
+
+async def get_chats_async(chat_id):
+    client = await get_client(token=token)
+    name = await get_char_name(client, charid)
+    ist_timezone = pytz.timezone('Asia/Kolkata')
+    first_name = name.split()[0]
+    try:
+        history = await client.chat.fetch_all_messages(chat_id)
+        chatlist = []
+        for i in history:
+            author = i.author_name
+            role = first_name if author == name else 'User'
+            content = i.get_primary_candidate().text
+            timestamp = i.create_time.astimezone(ist_timezone).strftime('%#I:%M:%S %p')
+            chatlist.append({
+                'author': role,
+                'message': content,
+                'timestamp': timestamp
+            })
+        return chatlist[::-1]
+    finally:
+        await client.close_session()
 
 def get_chats(chat_id):
-    response = requests.get("https://c-ai-api.onrender.com/chats", params={"chatid": chat_id})
-    e = response.json()["detail"]
-    for i in e:
-        if i["author"] == "Touka Kirishima":
-            i["author"] = "Touka"
-    return e
+    try:
+        return asyncio.run(get_chats_async(chat_id))
+    except Exception as e:
+        print("Error fetching chats:", e)
+        return []
 
 
-def migrate(chat_id):
+"""def migrate(chat_id):
     requests.get("https://c-ai-api.onrender.com/migrate", params={"chat_id": chat_id})
+sunsetted"""
+
 
 class User(UserMixin):
     def __init__(self, username, password, chat_id):
@@ -101,10 +149,10 @@ def register():
             flash("Username already exists!", "error")
             return redirect(url_for('register'))
         hashed_password = bcrypt.generate_password_hash(password).decode('utf-8')
-        client = PyCAI(token)
-        new = client.chat.new_chat(charid)
-        chat_id = new["external_id"]
-        migrate(chat_id)
+        #client = PyCAI(token)
+        #new = client.chat.new_chat(charid)
+        chat_id = asyncio.run(create_chat())
+        #migrate(chat_id)
         insert_user(username, hashed_password, chat_id)
         flash("Successfully registered, kindly login now!", 'success')
         return redirect(url_for('home'))
@@ -146,27 +194,33 @@ def chat():
 @socketio.on('connect')
 def handle_connect():
     print('Client connected')
-    print(current_user.chat_id)
+
+    if not current_user.is_authenticated:
+        print("Unauthenticated connection.")
+        return False  # Disconnect socket
+
     try:
+        print(current_user.chat_id)
         messages = get_chats(current_user.chat_id)
     except Exception as err:
-        print(err)
+        print("Chat fetch error:", err)
         messages = []
+        
     emit('messages', messages)
 
 @socketio.on('message')
 def handle_message(message):
     print('Received message:', message)
     if message == "newchatweeitherrealingornothinglilbro9090$":
-        client = PyCAI(token)
-        new = client.chat.new_chat(charid)
-        current_user.chat_id = new["external_id"]
+        #client = PyCAI(token)
+        #new = client.chat.new_chat(charid)
+        current_user.chat_id = asyncio.run(new_chat_id())
         conn = connect(url)
         cur = conn.cursor()
         cur.execute("update users set chat_id=%s where username=%s", (current_user.chat_id, current_user.username))
         conn.commit()
         conn.close()
-        migrate(current_user.chat_id)
+        #migrate(current_user.chat_id)
         emit('newchat_notification', 'New chat created successfully!')      
     elif message == "logoutweeitherrealingornothinglilbro9090$":
         emit('logout_notification', "Logged out successfully")

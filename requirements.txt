@@ -1,6 +1,6 @@
 flask-socketio
 requests
-characterai==0.8.0
+pycharacterai
 typing_extensions
 websockets
 python-dotenv
